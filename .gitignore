@@ -1,0 +1,25 @@
+# Runtime artifacts (dibuat otomatis saat script berjalan)
+migrate.log
+migrate.heartbeat
+migrate.lock
+
+# Isi folder kerja (file milik user, jangan di-commit)
+dummy/*
+!dummy/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/
+watch-agent.ps1
+untitled.md
