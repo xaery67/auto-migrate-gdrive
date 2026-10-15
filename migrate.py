@@ -1,7 +1,7 @@
 """
 migrate.py — Pindahkan file dari folder lokal ke Google Drive Desktop (24 jam).
 
-Sederhana, satu file, stdlib-only (tanpa dependency).
+Sederhana, satu file, stdlib-only (tanpa dependency). Tahan network error.
 
 Contoh pakai:
     python migrate.py                      # awasi dummy -> G:\\My Drive\\dummy selama 24 jam
@@ -17,6 +17,13 @@ Cara kerja tiap putaran:
     3. Kalau nama sudah ada di DST -> simpan sebagai "nama (1).ext" (tidak menimpa).
     4. Folder kosong TIDAK menghentikan script; file baru yang muncul langsung dipindah.
     5. Berhenti setelah DURATION jam (default 24), atau Ctrl+C.
+
+Ketahanan (penting untuk 24 jam):
+    - Network error / Drive terputus TIDAK mematikan script.
+    - Setiap file dicoba ulang beberapa kali dengan jeda sebelum menyerah.
+    - Kalau 1 file gagal, file lain tetap diproses.
+    - File lokal TIDAK pernah dihapus kalau copy belum terverifikasi.
+    - Drive yang hilang dideteksi & ditunggu sampai kembali (dengan backoff).
 
 Semua aktivitas juga ditulis ke migrate.log di folder script ini.
 """
@@ -35,6 +42,11 @@ DEFAULT_SRC = r"C:\Users\USER\Desktop\PROJECT\gdrive-desktop\dummy"
 DEFAULT_DST = r"G:\My Drive\dummy"
 DEFAULT_INTERVAL = 60     # detik antar pengecekan
 DEFAULT_DURATION_H = 24   # jam; 0 = tanpa batas (jalan terus)
+
+# ====== SETTING KETAHANAN NETWORK ERROR ======
+FILE_RETRIES = 3          # percobaan per file sebelum menyerah (dicoba lagi putaran berikutnya)
+FILE_RETRY_DELAY = 3      # jeda antar percobaan (detik), naik 2x tiap gagal
+DRIVE_MAX_BACKOFF = 300   # batas maksimal jeda saat Drive lama tidak siap (detik)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 LOG_FILE = SCRIPT_DIR / "migrate.log"
@@ -93,9 +105,12 @@ class SingleInstance:
 
 
 def log(msg: str) -> None:
-    """Tulis ke layar + file log."""
+    """Tulis ke layar + file log. Tidak pernah melempar exception."""
     line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except OSError:
+        pass
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -111,6 +126,14 @@ def human(n: int) -> str:
     return f"{n:.1f} GB"
 
 
+def safe_exists(path: Path) -> bool:
+    """Path.exists() yang tidak melempar exception (Drive bisa terputus)."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -119,69 +142,132 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def safe_unlink(path: Path) -> bool:
+    """Hapus file, jangan sampai melempar exception."""
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def unique_target(dst_dir: Path, name: str) -> Path:
     """Kalau nama sudah ada, kembalikan 'nama (1).ext', 'nama (2).ext', dst."""
     target = dst_dir / name
-    if not target.exists():
+    if not safe_exists(target):
         return target
     stem, ext = Path(name).stem, Path(name).suffix
     i = 1
-    while True:
+    while i <= 100000:
         target = dst_dir / f"{stem} ({i}){ext}"
-        if not target.exists():
+        if not safe_exists(target):
             return target
         i += 1
+    raise OSError(f"Tidak bisa menemukan nama unik untuk {name}")
 
 
 def migrate_file(src_file: Path, dst_dir: Path, dry_run: bool) -> bool:
-    """Copy + verifikasi + hapus satu file. Return True kalau sukses."""
-    target = unique_target(dst_dir, src_file.name)
-    size = src_file.stat().st_size
+    """Copy + verifikasi + hapus satu file.
 
-    if dry_run:
-        log(f"[DRY] {src_file.name} ({human(size)}) -> {target.name}")
-        return True
-
-    # 1. Copy ke nama sementara, verifikasi hash, baru rename ke nama final.
-    tmp = dst_dir / f".{src_file.name}.tmp-{os.getpid()}"
+    Return True kalau sukses. Return False kalau gagal — file lokal
+    DIPERTAHANKAN dan akan dicoba lagi putaran berikutnya.
+    Fungsi ini TIDAK PERNAH melempar exception (tahan network error).
+    """
+    name = src_file.name
     try:
-        shutil.copy2(src_file, tmp)
-        if sha256(src_file) != sha256(tmp):
-            log(f"[GAGAL] Verifikasi hash tidak cocok: {src_file.name}")
-            tmp.unlink(missing_ok=True)
-            return False
-        tmp.replace(target)
+        size = src_file.stat().st_size
     except OSError as e:
-        log(f"[GAGAL] Copy {src_file.name}: {e}")
-        tmp.unlink(missing_ok=True)
+        log(f"[GAGAL] Tidak bisa baca {name}: {e}")
         return False
 
-    # 2. Hapus file lokal hanya setelah copy terverifikasi.
+    # Tentukan nama tujuan (bisa gagal kalau Drive terputus).
     try:
-        src_file.unlink()
+        target = unique_target(dst_dir, name)
     except OSError as e:
-        log(f"[GAGAL] Tidak bisa hapus lokal {src_file.name}: {e} (file Drive sudah aman)")
-        return True  # copy sudah sukses; lokal gagal hapus dicoba lagi putaran berikutnya
+        log(f"[GAGAL] Drive tidak bisa diakses saat cek nama {name}: {e}")
+        return False
 
-    log(f"[OK] {src_file.name} ({human(size)}) -> {target.name}")
-    return True
+    if dry_run:
+        log(f"[DRY] {name} ({human(size)}) -> {target.name}")
+        return True
+
+    # Coba beberapa kali untuk mengatasi network error yang sifatnya sementara.
+    delay = FILE_RETRY_DELAY
+    for attempt in range(1, FILE_RETRIES + 1):
+        tmp = dst_dir / f".{name}.tmp-{os.getpid()}"
+        try:
+            # 1. Copy ke nama sementara.
+            shutil.copy2(src_file, tmp)
+
+            # 2. Verifikasi hash (baca ulang dari Drive).
+            if sha256(src_file) != sha256(tmp):
+                safe_unlink(tmp)
+                log(f"[GAGAL] Verifikasi hash tidak cocok: {name} (percobaan {attempt}/{FILE_RETRIES})")
+                if attempt < FILE_RETRIES:
+                    time.sleep(delay)
+                    delay *= 2
+                continue
+
+            # 3. Rename ke nama final (atomic).
+            tmp.replace(target)
+
+            # 4. Hapus lokal HANYA setelah copy terverifikasi.
+            if safe_unlink(src_file):
+                log(f"[OK] {name} ({human(size)}) -> {target.name}")
+            else:
+                log(f"[OK] {name} -> {target.name} (Drive aman; file lokal gagal dihapus, "
+                    f"akan dirapikan putaran berikutnya)")
+            return True
+
+        except OSError as e:
+            # Termasuk network error / Drive terputus. Bersihkan sisa & coba lagi.
+            safe_unlink(tmp)
+            if attempt < FILE_RETRIES:
+                log(f"[RETRY] {name} gagal (percobaan {attempt}/{FILE_RETRIES}): {e} "
+                    f"— coba lagi dalam {delay}s")
+                time.sleep(delay)
+                delay *= 2
+            else:
+                log(f"[GAGAL] {name} setelah {FILE_RETRIES} percobaan: {e} "
+                    f"(file lokal DIPERTAHANKAN, dicoba putaran berikutnya)")
+
+    return False
+
+
+def scan_files(src: Path) -> list[Path]:
+    """Daftar file di SRC (level teratas, lewati file tersembunyi). Tahan error."""
+    try:
+        return sorted(f for f in src.iterdir() if f.is_file() and not f.name.startswith("."))
+    except OSError as e:
+        log(f"[WARN] Tidak bisa scan folder lokal {src}: {e}")
+        return []
 
 
 def run_once(src: Path, dst: Path, dry_run: bool) -> tuple[int, int]:
-    """Scan SRC, migrasi semua file. Return (jumlah_sukses, sisa_file)."""
-    files = [f for f in sorted(src.iterdir()) if f.is_file() and not f.name.startswith(".")]
+    """Scan SRC, migrasi semua file. Return (jumlah_sukses, sisa_file).
+
+    Tahan error: kegagalan 1 file tidak menghentikan file lain.
+    """
+    files = scan_files(src)
     if not files:
         return 0, 0
 
-    if not dst.exists() and not dry_run:
-        dst.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        try:
+            dst.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            log(f"[WARN] Drive tidak siap ({dst}): {e}")
+            return 0, len(files)
 
     ok = 0
     for f in files:
-        if migrate_file(f, dst, dry_run):
-            ok += 1
+        try:
+            if migrate_file(f, dst, dry_run):
+                ok += 1
+        except Exception as e:  # noqa: BLE001 - jangan biarkan 1 file mematikan loop
+            log(f"[GAGAL] Error tak terduga pada {f.name}: {e}")
 
-    sisa = len([f for f in src.iterdir() if f.is_file()])
+    sisa = len(scan_files(src))
     return ok, sisa
 
 
@@ -200,7 +286,7 @@ def main() -> int:
     dst = Path(args.dst)
     interval = max(1, args.interval)
 
-    if not src.exists():
+    if not safe_exists(src):
         log(f"[ERROR] Folder lokal tidak ada: {src}")
         return 1
 
@@ -232,29 +318,35 @@ def _run(args, src: Path, dst: Path, interval: int) -> int:
     start = time.monotonic()
     deadline = None if args.duration <= 0 else start + args.duration * 3600
     total_ok = 0
-    drive_was_down = False
+    drive_down_since = None
+    backoff = interval
 
     while True:
-        # -- Cek Drive siap SEBELUM menyentuh file apa pun.
-        drive_ok = dst.exists()
-        if not drive_ok and not args.dry_run:
+        # -- Cek Drive siap SEBELUM menyentuh file apa pun (jangan hapus kalau Drive mati).
+        drive_ok = True
+        if not args.dry_run:
             try:
                 dst.mkdir(parents=True, exist_ok=True)
-                drive_ok = True
             except OSError as e:
-                if not drive_was_down:
+                drive_ok = False
+                if drive_down_since is None:
+                    drive_down_since = time.monotonic()
                     log(f"[WARN] Drive tidak siap ({dst}): {e} — tunggu sampai tersedia")
-                    drive_was_down = True
 
         if drive_ok:
-            if drive_was_down:
-                log("[INFO] Drive siap kembali.")
-                drive_was_down = False
+            if drive_down_since is not None:
+                down_for = time.monotonic() - drive_down_since
+                log(f"[INFO] Drive siap kembali (setelah {down_for:.0f}s).")
+                drive_down_since = None
+                backoff = interval
 
-            ok, sisa = run_once(src, dst, args.dry_run)
-            total_ok += ok
-            if ok or sisa:
-                log(f"Putaran: {ok} dimigrasi, {sisa} file tersisa di lokal.")
+            try:
+                ok, sisa = run_once(src, dst, args.dry_run)
+                total_ok += ok
+                if ok or sisa:
+                    log(f"Putaran: {ok} dimigrasi, {sisa} file tersisa di lokal.")
+            except Exception as e:  # noqa: BLE001 - satu putaran gagal jangan matikan loop
+                log(f"[ERROR] Putaran gagal (akan dicoba lagi): {e}")
 
         # -- Tulis heartbeat (untuk cek 'masih hidup?').
         try:
@@ -274,7 +366,13 @@ def _run(args, src: Path, dst: Path, interval: int) -> int:
             log(f"Durasi {dur_text} selesai. Total {total_ok} file dimigrasi.")
             return 0
 
-        time.sleep(interval)
+        # -- Tidur. Kalau Drive mati, jeda bertambah (backoff) sampai batas tertentu.
+        if drive_down_since is not None:
+            wait = min(backoff, DRIVE_MAX_BACKOFF)
+            backoff = min(backoff * 2, DRIVE_MAX_BACKOFF)
+        else:
+            wait = interval
+        time.sleep(wait)
 
 
 if __name__ == "__main__":
