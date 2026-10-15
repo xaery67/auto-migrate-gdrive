@@ -28,3 +28,5 @@ untitled.md
 .env
 .env.*
 *.env
+# kecuali template contoh (aman, tidak berisi token asli)
+!.env.example
