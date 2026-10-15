@@ -2,7 +2,7 @@
 
 Script Python sederhana untuk **memindahkan file** dari sebuah folder lokal ke folder di
 **Google Drive Desktop** secara otomatis. File lokal dihapus setelah salinan di Drive terverifikasi,
-dan script mengawasi folder tersebut terus-menerus (default **24 jam**).
+dan script mengawasi folder tersebut terus-menerus (**24/7**, jalan tanpa batas).
 
 - **Satu file, tanpa dependency** — cukup Python 3.11+ (stdlib saja).
 - **Anti nama double** — kalau nama sudah ada di Drive, otomatis jadi `nama (1).ext`.
@@ -20,7 +20,7 @@ dan script mengawasi folder tersebut terus-menerus (default **24 jam**).
 - [Opsi Command-Line](#opsi-command-line)
 - [Konfigurasi Default](#konfigurasi-default)
 - [File yang Dihasilkan](#file-yang-dihasilkan)
-- [Menjalankan 24 Jam](#menjalankan-24-jam)
+- [Menjalankan 24/7](#menjalankan-247)
 - [Troubleshooting](#troubleshooting)
 - [Struktur Folder](#struktur-folder)
 
@@ -43,7 +43,7 @@ dan script mengawasi folder tersebut terus-menerus (default **24 jam**).
 ## Cara Pakai Cepat
 
 ```bat
-REM 1. Jalankan selama 24 jam (default: folder "dummy" -> G:\My Drive\dummy)
+REM 1. Jalankan 24/7 (default: folder "dummy" -> G:\My Drive\dummy, jalan terus)
 run_24jam.bat
 
 REM 2. Atau langsung lewat Python
@@ -54,7 +54,7 @@ python migrate.py --dry-run
 ```
 
 Taruh file apa saja ke folder `dummy\`. Dalam beberapa detik (sesuai interval), file itu akan
-pindah ke `G:\My Drive\dummy` dan **terhapus dari folder lokal**.
+pindah ke `G:\My Drive\dummy` dan **terhapus dari folder lokal**. Script jalan terus (24/7).
 
 ---
 
@@ -74,7 +74,7 @@ Setiap putaran (default tiap **60 detik**):
      f. Kalau langkah b/c gagal (mis. network error) -> ulangi 3x dengan jeda bertambah.
         Masih gagal? File lokal DIPERTAHANKAN, lanjut ke file berikutnya.
 3. Kalau folder lokal kosong -> TIDAK berhenti, tetap menunggu file baru.
-4. Berhenti setelah durasi habis (default 24 jam), atau Ctrl+C.
+4. Jalan terus 24/7 (default). Pakai `--duration N` untuk berhenti otomatis, atau Ctrl+C.
 ```
 
 **Prinsip aman:** file lokal tidak akan pernah hilang sebelum salinan di Drive terbukti utuh.
@@ -106,7 +106,7 @@ tetap dipindah begitu koneksi/Drive kembali normal.**
 2. **Tidak ada file hilang** — skenario terburuk hanyalah file tetap tinggal di folder lokal
    (aman) dan dicoba lagi nanti.
 3. **Tidak ada file setengah jadi** yang terlihat sebagai file final (selalu lewat nama `.tmp`).
-4. **Loop 24 jam tidak mati** karena network error — diuji dengan memutus Drive di tengah proses.
+4. **Loop 24/7 tidak mati** karena network error — diuji dengan memutus Drive di tengah proses.
 
 ### Contoh log saat network error
 
@@ -137,7 +137,7 @@ tetap dipindah begitu koneksi/Drive kembali normal.**
 | `--src` | `C:\Users\USER\Desktop\PROJECT\gdrive-desktop\dummy` | Folder lokal sumber |
 | `--dst` | `G:\My Drive\dummy` | Folder tujuan di Drive |
 | `--interval` | `60` | Jeda antar pengecekan (detik) |
-| `--duration` | `24` | Lama jalan (jam). `0` = tanpa batas |
+| `--duration` | `0` | Lama jalan (jam). `0` = **24/7 tanpa batas (default)** |
 | `--once` | — | Jalankan sekali lalu keluar |
 | `--dry-run` | — | Tampilkan saja, tidak copy/hapus |
 | `--help` | — | Tampilkan bantuan |
@@ -151,8 +151,11 @@ python migrate.py --src "D:\data" --dst "G:\My Drive\backup"
 REM Cek tiap 30 detik
 python migrate.py --interval 30
 
-REM Jalan terus tanpa batas waktu (sampai Ctrl+C)
+REM Jalan terus tanpa batas waktu (sampai Ctrl+C) -- INI DEFAULT
 python migrate.py --duration 0
+
+REM Hanya 24 jam lalu berhenti sendiri
+python migrate.py --duration 24
 
 REM Sekali jalan saja (cocok untuk dijadikan scheduled task)
 python migrate.py --once
@@ -171,7 +174,7 @@ Nilai default ada di bagian atas `migrate.py` (boleh diedit langsung):
 DEFAULT_SRC = r"C:\Users\USER\Desktop\PROJECT\gdrive-desktop\dummy"
 DEFAULT_DST = r"G:\My Drive\dummy"
 DEFAULT_INTERVAL = 60     # detik antar pengecekan
-DEFAULT_DURATION_H = 24   # jam; 0 = tanpa batas
+DEFAULT_DURATION_H = 0    # jam; 0 = 24/7 tanpa batas (default)
 ```
 
 Kalau folder Anda tetap, edit 2 baris pertama agar tidak perlu mengetik argumen tiap kali.
@@ -197,21 +200,22 @@ type migrate.log           REM lihat riwayat lengkap
 
 ---
 
-## Menjalankan 24 Jam
+## Menjalankan 24/7
 
 ### Cara 1 — Dobel-klik `run_24jam.bat`
-Paling mudah. Menjalankan migrasi 24 jam dengan pengaturan default, lalu menutup jendela sendiri.
+Paling mudah. Menjalankan migrasi **24/7** (jalan terus) dengan pengaturan default.
 
 ```bat
-run_24jam.bat                          REM default
+run_24jam.bat                          REM default: 24/7, jalan terus
 run_24jam.bat --interval 30            REM custom: cek tiap 30 detik
-run_24jam.bat --duration 0             REM jalan terus tanpa batas
+run_24jam.bat --duration 24            REM hanya 24 jam lalu berhenti
 run_24jam.bat --src "D:\data" --dst "G:\My Drive\backup"
 ```
 
 ### Cara 2 — Langsung Python
 ```bat
-python migrate.py --interval 60 --duration 24
+python migrate.py                      REM default 24/7 (jalan terus)
+python migrate.py --interval 60 --duration 24   REM hanya 24 jam
 ```
 
 ### Menghentikan
@@ -267,7 +271,7 @@ Register-ScheduledTask -TaskName "GDriveDesktopMigrator" -Action $action -Trigge
 ```
 gdrive-desktop/
 ├── migrate.py          # Script utama
-├── run_24jam.bat       # Peluncur 24 jam
+├── run_24jam.bat       # Peluncur 24/7
 ├── README.md           # Dokumen ini
 ├── dummy/              # Folder lokal (sumber)
 ├── migrate.log         # Log aktivitas        (dibuat otomatis)
@@ -286,6 +290,6 @@ gdrive-desktop/
 - **Retry & backoff:** tiap file dicoba `FILE_RETRIES`× (default 3) dengan jeda berlipat; saat Drive
   lama tidak siap, jeda antar putaran naik sampai `DRIVE_MAX_BACKOFF` (default 300s).
 - **Anti-crash:** semua operasi I/O dibungkus penanganan error — satu file/putaran gagal tidak
-  menghentikan loop 24 jam.
+  menghentikan loop 24/7.
 - **File tersembunyi** (diawali `.`) di folder sumber dilewati.
 - **Subfolder** di folder sumber saat ini **tidak** diproses (hanya file di level teratas).

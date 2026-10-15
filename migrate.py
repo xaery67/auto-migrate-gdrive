@@ -4,8 +4,8 @@ migrate.py — Pindahkan file dari folder lokal ke Google Drive Desktop (24 jam)
 Sederhana, satu file, stdlib-only (tanpa dependency). Tahan network error.
 
 Contoh pakai:
-    python migrate.py                      # awasi dummy -> G:\\My Drive\\dummy selama 24 jam
-    python migrate.py --duration 0         # jalan terus tanpa batas waktu
+    python migrate.py                      # awasi dummy -> G:\\My Drive\\dummy, 24/7 (default)
+    python migrate.py --duration 24        # hanya 24 jam lalu berhenti
     python migrate.py --interval 30        # cek tiap 30 detik
     python migrate.py --src "D:/data" --dst "G:/My Drive/backup"
     python migrate.py --once               # sekali jalan lalu keluar
@@ -16,7 +16,7 @@ Cara kerja tiap putaran:
     2. Untuk tiap file: copy ke DST, verifikasi hash, lalu hapus file lokal.
     3. Kalau nama sudah ada di DST -> simpan sebagai "nama (1).ext" (tidak menimpa).
     4. Folder kosong TIDAK menghentikan script; file baru yang muncul langsung dipindah.
-    5. Berhenti setelah DURATION jam (default 24), atau Ctrl+C.
+    5. Jalan terus 24/7 (default). Pakai --duration N untuk berhenti otomatis, atau Ctrl+C.
 
 Ketahanan (penting untuk 24 jam):
     - Network error / Drive terputus TIDAK mematikan script.
@@ -41,7 +41,7 @@ from pathlib import Path
 DEFAULT_SRC = r"C:\Users\USER\Desktop\PROJECT\gdrive-desktop\dummy"
 DEFAULT_DST = r"G:\My Drive\dummy"
 DEFAULT_INTERVAL = 60     # detik antar pengecekan
-DEFAULT_DURATION_H = 24   # jam; 0 = tanpa batas (jalan terus)
+DEFAULT_DURATION_H = 0    # jam; 0 = 24/7 tanpa batas (DEFAULT). Isi angka utk batas waktu.
 
 # ====== SETTING KETAHANAN NETWORK ERROR ======
 FILE_RETRIES = 3          # percobaan per file sebelum menyerah (dicoba lagi putaran berikutnya)
@@ -277,7 +277,7 @@ def main() -> int:
     ap.add_argument("--dst", default=DEFAULT_DST, help="Folder tujuan di Drive")
     ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="Interval cek (detik)")
     ap.add_argument("--duration", type=float, default=DEFAULT_DURATION_H,
-                    help="Lama jalan (jam). 0 = tanpa batas. Default 24.")
+                    help="Lama jalan (jam). 0 = 24/7 tanpa batas (default).")
     ap.add_argument("--once", action="store_true", help="Jalankan sekali lalu keluar")
     ap.add_argument("--dry-run", action="store_true", help="Tampilkan saja, tidak copy/hapus")
     args = ap.parse_args()
